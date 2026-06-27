@@ -1,4 +1,4 @@
-/* ============================================================
+\/* ============================================================
    Taper — app logic (vanilla, no build step)
    Data model
    ----------
@@ -660,11 +660,29 @@ async function saveForm() {
 
 function deleteMed() {
   const med = meds.find(m => m.id === editingId);
-  if (!confirm(`Delete "${med.name}"? This also removes its calendar events.`)) return;
-  if (settings.calendarSync && gcalToken) deleteMedEvents(med);
-  meds = meds.filter(m => m.id !== editingId);
-  save(); closeSheet(); renderAll();
-  toast("Deleted.");
+  const hasEvents = settings.calendarSync && med.calEventIds && med.calEventIds.length;
+  if (!confirm(`Delete "${med.name}"?` + (hasEvents ? " Its calendar events will be removed too." : ""))) return;
+  closeSheet();
+  // remove from the app immediately
+  meds = meds.filter(m => m.id !== med.id);
+  save(); renderAll();
+
+  if (!hasEvents) { toast("Deleted."); return; }
+
+  const cleanup = async () => {
+    const failed = await deleteMedEvents(med);
+    if (failed.length) { queueDeletes(failed); toast("Deleted. A few calendar events will clear next time you sign in.", ""); }
+    else toast("Deleted, calendar cleared.", "ok");
+  };
+
+  if (gcalToken && Date.now() < gcalExp) {
+    cleanup().catch(() => { queueDeletes(med.calEventIds); toast("Deleted. Calendar events will clear on next sign-in.", ""); });
+  } else {
+    // not signed in — queue the events and ask Google for access to remove them
+    queueDeletes(med.calEventIds);
+    toast("Deleted. Sign in to clear its calendar events…", "");
+    ensureToken(flushPendingDeletes);
+  }
 }
 
 /* =====================================================================
@@ -706,6 +724,25 @@ async function enableNotify() {
    GOOGLE CALENDAR
    ===================================================================== */
 let tokenClient = null, gcalToken = null, gcalExp = 0, pendingAfterToken = null;
+let pendingDeletes = store.get("pendingDeletes", []);
+
+function queueDeletes(ids) {
+  if (!ids || !ids.length) return;
+  pendingDeletes = [...new Set([...pendingDeletes, ...ids])];
+  store.set("pendingDeletes", pendingDeletes);
+}
+async function flushPendingDeletes() {
+  if (!gcalToken || !pendingDeletes.length) return;
+  const failed = await deleteIds(pendingDeletes);
+  pendingDeletes = failed;
+  store.set("pendingDeletes", pendingDeletes);
+}
+
+function loadStoredToken() {
+  const t = store.get("gcalTok", null);
+  if (t && t.token && t.exp > Date.now()) { gcalToken = t.token; gcalExp = t.exp; }
+}
+function clearStoredToken() { gcalToken = null; gcalExp = 0; store.del("gcalTok"); }
 
 function initTokenClient() {
   if (!window.google?.accounts?.oauth2 || !settings.clientId) return false;
@@ -713,11 +750,19 @@ function initTokenClient() {
     client_id: settings.clientId.trim(),
     scope: "https://www.googleapis.com/auth/calendar.events",
     callback: (resp) => {
-      if (resp.error) { toast("Google sign-in failed.", "err"); return; }
+      if (resp.error) {
+        // Silent attempts that need interaction fail quietly — don't nag.
+        if (resp.error !== "interaction_required" && resp.error !== "access_denied")
+          toast("Google sign-in failed.", "err");
+        pendingAfterToken = null;
+        return;
+      }
       gcalToken = resp.access_token;
       gcalExp = Date.now() + (resp.expires_in ? resp.expires_in * 1000 : 3600000) - 60000;
+      store.set("gcalTok", { token: gcalToken, exp: gcalExp });
       updateSyncPill();
       toast("Google Calendar connected.", "ok");
+      flushPendingDeletes();   // clean up anything left from earlier offline deletes
       const cb = pendingAfterToken; pendingAfterToken = null; if (cb) cb();
     }
   });
@@ -729,6 +774,7 @@ function ensureToken(after) {
   if (!tokenClient && !initTokenClient()) {
     return toast("Add your Google Client ID in Settings first.", "err");
   }
+  // Interactive grant only happens when the user actually does something that needs it.
   tokenClient.requestAccessToken({ prompt: gcalToken ? "" : "consent" });
 }
 
@@ -738,7 +784,7 @@ async function gcal(path, method = "GET", body) {
     headers: { Authorization: "Bearer " + gcalToken, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined
   });
-  if (res.status === 401) { gcalToken = null; throw new Error("auth"); }
+  if (res.status === 401) { clearStoredToken(); throw new Error("auth"); }
   if (!res.ok) throw new Error("gcal " + res.status);
   return res.status === 204 ? null : res.json();
 }
@@ -795,7 +841,8 @@ function baseEvent(med, dose, dateStr, time, recurrence, reminders) {
     end: { dateTime: rfc3339(dateStr, time), timeZone: TZ },
     reminders,
     transparency: "transparent",
-    colorId: "7"
+    colorId: "7",
+    extendedProperties: { private: { taperApp: "1", taperMed: med.id } }
   };
   if (recurrence) ev.recurrence = recurrence;
   return ev;
@@ -805,7 +852,9 @@ async function syncMed(med) {
   if (!gcalToken) return;
   try {
     toast("Syncing to calendar…");
-    await deleteMedEvents(med, true);
+    await flushPendingDeletes();
+    const failed = await deleteMedEvents(med);   // clear old events first
+    if (failed.length) queueDeletes(failed);
     const ids = [];
     for (const ev of eventsFor(med)) {
       const created = await gcal("/calendars/primary/events", "POST", ev);
@@ -818,17 +867,78 @@ async function syncMed(med) {
     else toast("Calendar sync failed.", "err");
   }
 }
-async function deleteMedEvents(med, silent) {
-  if (!gcalToken || !med.calEventIds?.length) return;
-  for (const id of med.calEventIds) {
-    try { await gcal("/calendars/primary/events/" + id, "DELETE"); } catch {}
+
+// delete one event; treat already-gone (404/410) as success
+async function deleteEvent(id) {
+  try { await gcal("/calendars/primary/events/" + id, "DELETE"); return "ok"; }
+  catch (e) {
+    if (e.message === "auth") return "auth";
+    if (e.message === "gcal 404" || e.message === "gcal 410") return "gone";
+    return "fail";
   }
-  med.calEventIds = []; save();
-  if (!silent) toast("Removed calendar events.");
 }
+async function deleteIds(ids) {
+  const arr = [...new Set(ids)].filter(Boolean), failed = [];
+  for (let i = 0; i < arr.length; i++) {
+    const r = await deleteEvent(arr[i]);
+    if (r === "ok" || r === "gone") continue;
+    if (r === "auth") { failed.push(...arr.slice(i)); break; }
+    failed.push(arr[i]);
+  }
+  return failed;
+}
+// list event IDs matching a query param (handles recurring masters + pagination)
+async function listEventIds(paramStr) {
+  const ids = []; let pageToken;
+  do {
+    const q = `/calendars/primary/events?${paramStr}&showDeleted=false&singleEvents=false&maxResults=250`
+      + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "");
+    const data = await gcal(q);
+    (data.items || []).forEach(it => it.id && ids.push(it.id));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return ids;
+}
+
+// Remove every calendar event for a med — found by tag AND by stored IDs, so
+// nothing is missed even if a previous sync was interrupted. Returns failed IDs.
+async function deleteMedEvents(med) {
+  let ids = (med.calEventIds || []).slice();
+  try {
+    const tagged = await listEventIds(`privateExtendedProperty=${encodeURIComponent("taperMed=" + med.id)}`);
+    ids = [...new Set([...ids, ...tagged])];
+  } catch (e) { if (e.message === "auth") throw e; }  // fall back to stored IDs
+  med.calEventIds = []; save();
+  return deleteIds(ids);
+}
+
 async function syncAll() {
   if (!gcalToken) return ensureToken(syncAll);
   for (const med of meds) await syncMed(med);
+}
+
+// Thorough cleanup: tagged events, older untagged ones (by text), tracked IDs, and the queue.
+async function purgeAllTaperEvents() {
+  if (!gcalToken) return ensureToken(purgeAllTaperEvents);
+  try {
+    toast("Finding Taper events…");
+    const ids = new Set();
+    try { (await listEventIds(`privateExtendedProperty=${encodeURIComponent("taperApp=1")}`)).forEach(i => ids.add(i)); }
+    catch (e) { if (e.message === "auth") throw e; }
+    try { (await listEventIds(`q=${encodeURIComponent("Scheduled with Taper")}`)).forEach(i => ids.add(i)); }
+    catch (e) { if (e.message === "auth") throw e; }
+    pendingDeletes.forEach(i => ids.add(i));
+    meds.forEach(m => (m.calEventIds || []).forEach(i => ids.add(i)));
+    if (!ids.size) { toast("No Taper events found in your calendar.", "ok"); return; }
+    const failed = await deleteIds([...ids]);
+    meds.forEach(m => { m.calEventIds = []; });
+    pendingDeletes = failed; store.set("pendingDeletes", pendingDeletes); save();
+    const removed = ids.size - failed.length;
+    toast(failed.length ? `Removed ${removed}; ${failed.length} will retry on next sign-in.` : `Removed ${removed} event${removed === 1 ? "" : "s"}.`, failed.length ? "" : "ok");
+  } catch (e) {
+    if (e.message === "auth") { updateSyncPill(); ensureToken(purgeAllTaperEvents); }
+    else toast("Couldn't reach Google Calendar.", "err");
+  }
 }
 
 /* =====================================================================
@@ -842,9 +952,13 @@ function wireSettings() {
     save(); renderSettings();
     if (settings.calendarSync) toast("Add your Client ID, then connect.", "");
   };
-  $("#clientId").onchange = e => { settings.clientId = e.target.value.trim(); tokenClient = null; gcalToken = null; save(); updateSyncPill(); };
+  $("#clientId").onchange = e => { settings.clientId = e.target.value.trim(); tokenClient = null; clearStoredToken(); save(); updateSyncPill(); };
   $("#reminderLead").onchange = e => { settings.reminderLead = +e.target.value; save(); };
   $("#btnConnect").onclick = () => ensureToken(() => { if (meds.length && confirm("Sync your medicines to Google Calendar now?")) syncAll(); });
+  $("#btnPurge").onclick = () => {
+    if (!confirm("Remove every event Taper created from your Google Calendar? Your medicines stay in the app.")) return;
+    ensureToken(purgeAllTaperEvents);
+  };
   $("#syncPill").onclick = () => { switchView("settings"); if (settings.calendarSync && !gcalToken) ensureToken(); };
   $("#setupHelp").onclick = (e) => { e.preventDefault(); showSetupHelp(); };
 
@@ -906,6 +1020,7 @@ function switchView(name) {
 
 function boot() {
   if (!store.persistent) toast("Private mode: data won't be saved after you close this.", "err");
+  loadStoredToken();   // reuse a still-valid token so reopening needs no sign-in
   $$(".tab[data-view]").forEach(t => t.onclick = () => switchView(t.dataset.view));
   $("#tabAdd").onclick = () => openSheet();
   $("#scrim").onclick = closeSheet;
@@ -916,11 +1031,10 @@ function boot() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
   }
-  // try silent calendar reconnect if previously enabled
+  // Prepare the Google client but DO NOT prompt on launch — auth happens lazily
+  // only when the user actually adds or changes a medicine, or taps the sync pill.
   window.addEventListener("load", () => {
-    if (settings.calendarSync && settings.clientId) {
-      setTimeout(() => { if (initTokenClient()) tokenClient.requestAccessToken({ prompt: "" }); }, 800);
-    }
+    if (settings.calendarSync && settings.clientId) setTimeout(initTokenClient, 600);
   });
   // re-evaluate due/overdue + notifications every minute
   setInterval(() => { if ($("#view-today").classList.contains("active")) renderToday(); }, 60000);
