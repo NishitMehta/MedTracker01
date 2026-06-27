@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <title>Taper — Medicine Schedule</title>
+  <meta name="description" content="Track your medicine schedule, build taper-down plans, and sync reminders to Google Calendar." />
+  <meta name="theme-color" content="#1b1640" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Taper" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/favicon.png" type="image/png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"></div>
+
+  <div class="app">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="14" width="3.4" height="7" rx="1.2" fill="#fbbf24"/>
+          <rect x="8" y="16" width="3.4" height="5" rx="1.2" fill="#a3d977"/>
+          <rect x="13" y="17.5" width="3.4" height="3.5" rx="1.2" fill="#5eead4"/>
+          <rect x="6.5" y="3.5" width="13" height="6" rx="3" transform="rotate(-22 13 6.5)" fill="#f3f1ff"/>
+          <path d="M7.6 5.3 L12.4 3.3" stroke="#5eead4" stroke-width="6" stroke-linecap="round" transform="rotate(-22 13 6.5)" opacity="0.9"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <b>Taper</b>
+        <span>Medicine schedule</span>
+      </div>
+      <div class="spacer"></div>
+      <button class="sync-pill" id="syncPill" aria-label="Calendar sync status">
+        <span class="dot"></span><span id="syncPillLabel">Calendar off</span>
+      </button>
+    </header>
+
+    <!-- TODAY ------------------------------------------------ -->
+    <section class="view active" id="view-today">
+      <div class="view-head">
+        <h1 id="todayTitle">Today</h1>
+        <div class="sub" id="todayDate"></div>
+      </div>
+      <div class="day-strip" id="dayStrip"></div>
+      <div class="adherence glass" id="adherenceCard" style="display:none">
+        <svg class="ring" viewBox="0 0 36 36" id="ring"></svg>
+        <div class="label">
+          <b id="adherencePct">0%</b>
+          <div id="adherenceText">doses taken</div>
+        </div>
+      </div>
+      <div class="dose-list" id="doseList"></div>
+    </section>
+
+    <!-- MEDS ------------------------------------------------- -->
+    <section class="view" id="view-meds">
+      <div class="view-head">
+        <h1>Medicines</h1>
+        <div class="sub" id="medsSub">Your active plans</div>
+      </div>
+      <div class="med-list" id="medList"></div>
+    </section>
+
+    <!-- SETTINGS --------------------------------------------- -->
+    <section class="view" id="view-settings">
+      <div class="view-head">
+        <h1>Settings</h1>
+        <div class="sub">Reminders, calendar, and data</div>
+      </div>
+
+      <div class="set-row glass">
+        <div class="txt">
+          <b>In-app reminders</b>
+          <p>Pop a notification at dose time while the app is open.</p>
+        </div>
+        <button class="toggle" id="tglNotify" aria-label="Toggle in-app reminders"></button>
+      </div>
+
+      <div class="set-row glass" style="flex-direction:column; align-items:stretch; gap:12px;">
+        <div style="display:flex; align-items:center; gap:14px;">
+          <div class="txt">
+            <b>Google Calendar sync</b>
+            <p>Push each dose to your calendar so reminders fire even when this app is closed.</p>
+          </div>
+          <button class="toggle" id="tglCalendar" aria-label="Toggle calendar sync"></button>
+        </div>
+        <div id="calConfig" style="display:none">
+          <div class="field" style="margin-bottom:10px">
+            <label for="clientId">Google OAuth Client ID</label>
+            <input class="input" id="clientId" placeholder="xxxxx.apps.googleusercontent.com" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field" style="margin-bottom:10px">
+            <label for="reminderLead">Remind me before each dose</label>
+            <select class="input" id="reminderLead">
+              <option value="0">At dose time</option>
+              <option value="5">5 minutes before</option>
+              <option value="10">10 minutes before</option>
+              <option value="15">15 minutes before</option>
+              <option value="30">30 minutes before</option>
+            </select>
+          </div>
+          <button class="btn btn-ghost sm" id="btnConnect">Connect Google account</button>
+          <p class="small-note" style="margin-top:10px">
+            Your data stays on this device. The app talks to Google directly from your browser — nothing passes through any server.
+            <a class="link" href="#" id="setupHelp">How do I get a Client ID?</a>
+          </p>
+        </div>
+      </div>
+
+      <div class="set-row glass">
+        <div class="txt">
+          <b>Export data</b>
+          <p>Download all medicines and logs as a JSON file.</p>
+        </div>
+        <button class="btn btn-ghost sm" id="btnExport">Export</button>
+      </div>
+      <div class="set-row glass">
+        <div class="txt">
+          <b>Import data</b>
+          <p>Restore from a previously exported file.</p>
+        </div>
+        <button class="btn btn-ghost sm" id="btnImport">Import</button>
+        <input type="file" id="importFile" accept="application/json" hidden />
+      </div>
+
+      <div class="divider"></div>
+      <button class="btn btn-danger" id="btnReset">Erase all data</button>
+      <p class="small-note" style="margin-top:14px; text-align:center">
+        Taper helps you follow a schedule. It is not medical advice — always follow your prescriber's instructions.
+      </p>
+    </section>
+  </div>
+
+  <!-- TAB BAR ------------------------------------------------ -->
+  <nav class="tabbar glass">
+    <button class="tab active" data-view="today">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5 12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>
+      Today
+    </button>
+    <button class="tab" data-view="meds">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="5"/><path d="M3 12h18M12 3v18"/></svg>
+      Meds
+    </button>
+    <button class="tab add" id="tabAdd" aria-label="Add medicine">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="tab" data-view="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7.7 1.6 1.6 0 0 0-1 1.5V22a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H2a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H8a1.6 1.6 0 0 0 1-1.5V2a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V8a1.6 1.6 0 0 0 1.5 1H22a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+      Settings
+    </button>
+  </nav>
+
+  <!-- ADD / EDIT SHEET -------------------------------------- -->
+  <div class="scrim" id="scrim"></div>
+  <div class="sheet glass" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle"></div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="app.js"></script>
+</body>
+</html>
