@@ -1,7 +1,10 @@
 /* Taper service worker — offline app shell.
-   Code files (html/js/css/json) are network-first so deploys land immediately;
-   icons are cache-first. Google auth/API traffic is never intercepted. */
-const CACHE = "taper-v2";
+   Code files (html/js/css/json) are network-first AND fetched with the HTTP cache
+   bypassed (cache:'no-store'), so a deploy is picked up immediately. Icons are
+   cache-first. Google auth/API traffic is never intercepted.
+   The page registers this with { updateViaCache:'none' } so the worker script
+   itself is never served from the HTTP cache. */
+const CACHE = "taper-v3";
 const SHELL = [
   "./",
   "./index.html",
@@ -15,14 +18,20 @@ const SHELL = [
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(
+    caches.open(CACHE)
+      .then((c) => Promise.all(SHELL.map((u) =>
+        fetch(new Request(u, { cache: "no-store" })).then((r) => r.ok && c.put(u, r)).catch(() => {})
+      )))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener("activate", (e) => {
   e.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
-    ).then(() => self.clients.claim())
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
   );
 });
 
@@ -34,9 +43,9 @@ self.addEventListener("fetch", (e) => {
   const isCode = req.mode === "navigate" || /\.(?:js|css|html|json)$/.test(url.pathname);
 
   if (isCode) {
-    // network-first: always try the freshest code, fall back to cache offline
+    // network-first, bypassing the browser HTTP cache, fall back to cache offline
     e.respondWith(
-      fetch(req).then((res) => {
+      fetch(req, { cache: "no-store" }).then((res) => {
         if (res && res.status === 200) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(req.mode === "navigate" ? "./index.html" : req, copy));

@@ -45,6 +45,7 @@ let editingId = null;
 let formDraft = null;       // working copy while sheet is open
 let noteTimers = [];
 let toastTimer = null;
+let swReloadPending = false, swRefreshing = false;
 
 const COLORS = ["#5eead4", "#fbbf24", "#a78bfa", "#fb7185", "#60a5fa", "#34d399", "#f472b6", "#fb923c"];
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -396,6 +397,7 @@ function closeSheet() {
   $("#scrim").classList.remove("open");
   $("#sheet").classList.remove("open");
   editingId = null; formDraft = null;
+  if (swReloadPending) doSwReload();
 }
 
 function renderSheet() {
@@ -1041,6 +1043,12 @@ function switchView(name) {
   if (name === "today") { selectedDate = ymd(new Date()); renderToday(); }
 }
 
+function doSwReload() {
+  if (swRefreshing) return;
+  swRefreshing = true;
+  window.location.reload();
+}
+
 function boot() {
   if (!store.persistent) toast("Private mode: data won't be saved after you close this.", "err");
   loadStoredToken();   // reuse a still-valid token so reopening needs no sign-in
@@ -1050,9 +1058,22 @@ function boot() {
   wireSettings();
   renderAll();
 
-  // service worker
+  // service worker — register so updates are detected and applied automatically
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!hadController) return;            // first install: nothing to refresh
+      if ($("#sheet").classList.contains("open")) {
+        swReloadPending = true;
+        toast("Update ready — refreshes when you close this.", "");
+      } else doSwReload();
+    });
+    navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then((reg) => {
+      reg.update();
+      // check for a new version whenever the app regains focus
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) reg.update(); });
+      setInterval(() => reg.update(), 60 * 60 * 1000);
+    }).catch(() => {});
   }
   // Prepare the Google client but DO NOT prompt on launch — auth happens lazily
   // only when the user actually adds or changes a medicine, or taps the sync pill.
