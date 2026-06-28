@@ -688,9 +688,23 @@ function deleteMed() {
 /* =====================================================================
    NOTIFICATIONS (in-app, while open)
    ===================================================================== */
+// Fire through the service worker — new Notification() throws on Android Chrome.
+async function fireNotification(title, options) {
+  const opts = Object.assign({ icon: "icons/icon-192.png", badge: "icons/icon-192.png" }, options);
+  try {
+    if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification(title, opts);
+      return true;
+    }
+  } catch {}
+  try { new Notification(title, opts); return true; } catch {}
+  return false;
+}
+
 function scheduleNotifications() {
   noteTimers.forEach(clearTimeout); noteTimers = [];
-  if (!settings.notify || Notification?.permission !== "granted") return;
+  if (!settings.notify || (typeof Notification !== "undefined" && Notification.permission !== "granted")) return;
   if (selectedDate !== ymd(new Date())) return;
   const now = new Date();
   const log = logs[selectedDate] || {};
@@ -701,12 +715,10 @@ function scheduleNotifications() {
     const delay = when - now;
     if (delay <= 0 || delay > 86400000) continue;
     noteTimers.push(setTimeout(() => {
-      try {
-        new Notification("Time for " + x.name, {
-          body: (x.dose ? x.dose + " · " : "") + fmtTime(x.time),
-          icon: "icons/icon-192.png", badge: "icons/icon-192.png", tag: x.key
-        });
-      } catch {}
+      fireNotification("Time for " + x.name, {
+        body: (x.dose ? x.dose + " · " : "") + fmtTime(x.time),
+        tag: x.key, requireInteraction: true
+      });
     }, delay));
   }
 }
@@ -715,9 +727,19 @@ async function enableNotify() {
   if (!("Notification" in window)) return toast("This browser has no notifications.", "err");
   let perm = Notification.permission;
   if (perm === "default") perm = await Notification.requestPermission();
-  if (perm !== "granted") { settings.notify = false; save(); renderSettings(); return toast("Permission denied.", "err"); }
+  if (perm !== "granted") { settings.notify = false; save(); renderSettings(); return toast("Permission denied — allow notifications in your browser settings.", "err"); }
   settings.notify = true; save(); renderSettings(); scheduleNotifications();
-  toast("Reminders on for while the app is open.", "ok");
+  const shown = await fireNotification("Reminders are on", { body: "You'll get a nudge at each dose time while the app is open.", tag: "taper-test" });
+  toast(shown ? "Reminders on — check the test notification." : "Enabled, but the system blocked the notification. Check OS settings.", shown ? "ok" : "err");
+}
+
+async function testNotification() {
+  if (!("Notification" in window)) return toast("This browser has no notifications.", "err");
+  let perm = Notification.permission;
+  if (perm === "default") perm = await Notification.requestPermission();
+  if (perm !== "granted") return toast("Notifications are blocked. Allow them in your browser/site settings.", "err");
+  const shown = await fireNotification("Taper test notification", { body: "If you can see this, in-app reminders work on this device.", tag: "taper-test" });
+  toast(shown ? "Sent — did it appear?" : "The system blocked it. Check OS notification settings for your browser.", shown ? "ok" : "err");
 }
 
 /* =====================================================================
@@ -946,6 +968,7 @@ async function purgeAllTaperEvents() {
    ===================================================================== */
 function wireSettings() {
   $("#tglNotify").onclick = () => settings.notify ? (settings.notify = false, save(), renderSettings(), scheduleNotifications()) : enableNotify();
+  $("#btnTestNotify").onclick = (e) => { e.preventDefault(); testNotification(); };
 
   $("#tglCalendar").onclick = () => {
     settings.calendarSync = !settings.calendarSync;

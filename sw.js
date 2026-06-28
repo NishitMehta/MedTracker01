@@ -1,7 +1,7 @@
 /* Taper service worker — offline app shell.
-   Only same-origin GET requests are cached; Google auth/API and
-   font requests pass straight through to the network. */
-const CACHE = "taper-v1";
+   Code files (html/js/css/json) are network-first so deploys land immediately;
+   icons are cache-first. Google auth/API traffic is never intercepted. */
+const CACHE = "taper-v2";
 const SHELL = [
   "./",
   "./index.html",
@@ -29,32 +29,43 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   const url = new URL(req.url);
-  // Only handle same-origin GETs; everything else (Google, fonts) goes to network.
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
 
-  // Network-first for navigations so updates land; fall back to cached shell.
-  if (req.mode === "navigate") {
+  const isCode = req.mode === "navigate" || /\.(?:js|css|html|json)$/.test(url.pathname);
+
+  if (isCode) {
+    // network-first: always try the freshest code, fall back to cache offline
     e.respondWith(
       fetch(req).then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put("./index.html", copy));
+        if (res && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req.mode === "navigate" ? "./index.html" : req, copy));
+        }
         return res;
-      }).catch(() => caches.match("./index.html"))
+      }).catch(() => caches.match(req).then((c) => c || caches.match("./index.html")))
     );
     return;
   }
 
-  // Cache-first for static assets, refreshing in the background.
+  // cache-first for icons/images
   e.respondWith(
-    caches.match(req).then((cached) => {
-      const net = fetch(req).then((res) => {
-        if (res && res.status === 200) {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy));
-        }
-        return res;
-      }).catch(() => cached);
-      return cached || net;
+    caches.match(req).then((cached) => cached || fetch(req).then((res) => {
+      if (res && res.status === 200) {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(req, copy));
+      }
+      return res;
+    }).catch(() => cached))
+  );
+});
+
+// Tapping a notification focuses or opens the app.
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  e.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) { if ("focus" in c) return c.focus(); }
+      if (clients.openWindow) return clients.openWindow("./");
     })
   );
 });
