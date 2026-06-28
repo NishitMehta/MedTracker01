@@ -59,8 +59,30 @@ needed and nothing is stored on a server.
 7. In the app: **Settings → Google Calendar sync → on**, paste the Client ID, pick a reminder lead
    time, then **Connect Google account**. Saving a medicine after that pushes its doses to your calendar.
 
-To remove the calendar events later, delete the medicine in the app while connected, or remove the
-events directly in Google Calendar.
+To remove the calendar events later, delete the medicine in the app (its events are removed too), or
+use **Settings → Remove all Taper events from calendar** to clear everything Taper ever created —
+including any leftovers from an interrupted sync. If you delete a medicine while not signed in, the
+cleanup is queued and runs automatically the next time you connect.
+
+## Signing in to Google (and why it's not every time)
+
+A static, backend-free app can't store a permanent Google login — Google's browser sign-in issues
+an access token that lasts about an hour and isn't meant to be kept forever. The app handles this by:
+
+- **Remembering the token while it's valid**, so reopening the app within ~an hour needs no sign-in.
+- **Only asking you to sign in when you actually add or change a medicine** (or tap the calendar
+  pill). It never forces a sign-in just because you opened the app.
+
+For normal use — viewing today's doses, ticking them off, getting reminders — **you don't need to be
+signed in at all**. The calendar events already exist in Google Calendar and fire on their own.
+
+If you want sync that *never* asks you to sign in again, that requires a small server component (a
+serverless function holding a refresh token); it's outside the scope of this static app, but it's the
+only way around the one-hour browser-token limit.
+
+If a sign-in is ever blocked with **Error 403: access_denied**, your Google Cloud OAuth consent
+screen is in *Testing* mode — add your Google address under **Test users** and it'll work. Testing
+mode is fine for personal use (no Google verification needed).
 
 ## How reminders actually work (important)
 
